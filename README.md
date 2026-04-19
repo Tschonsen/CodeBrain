@@ -2,7 +2,7 @@
 
 **An MCP server that lets Claude Code offload bulk work to a local LLM running on your own hardware.**
 
-![Status](https://img.shields.io/badge/status-Phase_2_complete-brightgreen)
+![Status](https://img.shields.io/badge/status-Phases_1--4_complete-brightgreen)
 ![Stack](https://img.shields.io/badge/stack-Python_%2B_MCP_%2B_Ollama-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -18,7 +18,7 @@
 
 ## Status
 
-**Phase 2 complete.** Five tools exposed, `.brain/context.md` passthrough live, MCP integration verified in a real Claude Code session. Dogfood-tested on coding tasks (LRU cache, refactors, closure explanations) and structured text generation. Phase 2.5 (per-file brain system) is next — see the roadmap below.
+**Phases 1–4 complete, Phase 5 deferred.** Nine tools exposed, `.brain/context.md` passthrough live, per-file brain summaries scanner, verifier loop, consensus decoding. MCP integration verified in a real Claude Code session. Phase 5 (RAG) was explicitly scoped as "only if needed" and current use doesn't show cross-file search as a bottleneck, so it stays deferred.
 
 ## How it works
 
@@ -35,19 +35,22 @@ Claude reviews,            ◄────────   tool result string     
 applies, or pushes back
 ```
 
-Five tools are exposed today:
+Nine tools are exposed today:
 
 | Tool | When Claude would reach for it |
 |---|---|
 | `codebrain_generate(prompt, system, use_brain)` | Bulk content, boilerplate, repetitive transformations, first drafts |
 | `codebrain_batch_generate(prompts, system, use_brain)` | N prompts with one shared system message, serial execution, index-stable errors so one failure doesn't abort the batch |
-| `codebrain_polish(text, instructions, use_brain)` | Targeted transform over existing text — shorten, rephrase, translate, tighten — preserves meaning and structure instead of regenerating |
+| `codebrain_polish(text, instructions, use_brain)` | Targeted transform over existing text — shorten, rephrase, translate, tighten. Auto-retries on no-op output. |
 | `codebrain_explain(code, question)` | Quick read-only explanations without burning Claude context |
+| `codebrain_generate_verified(prompt, min_words, max_words, must_match, max_retries)` | Generation with deterministic verifier loop: word-count / regex-schema checks, tightened-instruction retry on violation |
+| `codebrain_consensus_generate(prompt, n)` | N candidates + judge call → best single output. Use on high-variance tasks. |
+| `codebrain_init(root, force)` | One-shot repo onboarding: detects stack, writes `.brain/context.md` template |
+| `codebrain_scan_file(path, force)` | Generate or refresh one `<source>.brain` summary file |
+| `codebrain_scan_repo(root, force, extensions, exclude_dirs)` | Walk + scan a tree; hash-gated, per-file failures don't abort the batch |
 | `codebrain_status()` | Check which models are installed locally |
 
 The `use_brain` flag on generation tools automatically prepends `.brain/context.md` from the current working directory to the system prompt, so project-specific context travels with every call without Claude having to pass it manually.
-
-Per-file brain summaries (`foo.py.brain` siblings with signatures, dependencies, and purpose) and a text-output VERIFIER loop are next on the roadmap.
 
 ## Requirements
 
@@ -88,6 +91,44 @@ Add CodeBrain to your Claude Code MCP config. On Windows, that's usually `~/.cla
 
 Restart any Claude Code session — the five `codebrain_*` tools should now appear in the available-tools list.
 
+## Keep brain files in sync automatically
+
+Once you've run `codebrain_init` on a repo and scanned it with `codebrain_scan_repo`, you probably want brain files to refresh automatically whenever Claude edits source. Two pieces wire that up:
+
+**1. Project CLAUDE.md snippet** — tell Claude to read brain files before opening source:
+
+```markdown
+## Brain files
+
+This repo has per-file `.brain` summaries next to each source file.
+Before reading a full source file, read its `<path>.brain` sibling first.
+Only open the source when the brain file is insufficient for the task.
+```
+
+**2. PostToolUse hook** — regenerate the brain after every Edit/Write.
+
+Add to `.claude/settings.json` in the repo root:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import asyncio, json, sys; from codebrain.brain_scanner import scan_file; d = json.load(sys.stdin); p = d.get('tool_input', {}).get('file_path'); p and p.endswith(('.py', '.ts', '.tsx', '.js', '.jsx', '.java', '.go', '.rs')) and print(asyncio.run(scan_file(p)))\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook inspects the edited path, skips non-source files via the extension filter, and kicks off a scan. Hash-gated: unchanged files don't hit Qwen.
+
 ## Sanity check
 
 Inside a Claude Code session, ask Claude:
@@ -114,7 +155,16 @@ CodeBrain/
 │   ├── __init__.py
 │   ├── __main__.py            # `python -m codebrain` entry
 │   ├── backend.py             # Ollama HTTP client
-│   └── server.py              # FastMCP server + tool definitions
+│   ├── server.py              # FastMCP server + tool definitions
+│   ├── brain_scanner.py       # scan_file / scan_repo + hash gate
+│   ├── brain_init.py          # one-shot .brain/context.md seeding
+│   ├── verifier.py            # deterministic output checks
+│   └── prompts/
+│       └── brain_few_shot.md  # few-shot for brain-file generation
+├── tests/                     # 96 unit + integration tests
+├── .spec/
+│   ├── CURRENT.md             # phase state
+│   └── brain-file-format.md   # brain-file format v1
 ├── pyproject.toml
 ├── LICENSE
 └── README.md
@@ -135,30 +185,31 @@ CodeBrain/
 - [x] `.brain/context.md` passthrough — cwd project context auto-prepended to every generation call
 - [x] Dogfood: coding tasks solid, text-transform tasks revealed real limits (informs Phase 3)
 
-### Phase 2.5 — brain system *(next)*
-The real context-budget saver. For each code file `foo.py`, a companion `foo.py.brain` that captures signatures, dependencies, purpose, and gotchas. Claude reads the brain file first and only opens the source when it actually needs to.
+### Phase 2.5 — brain system ✓
+Per-file `<source>.brain` summaries sit next to each source file. Claude reads the brain first and only opens the source when the brain is insufficient.
 
-- `codebrain_scan_file(path)` — generate or refresh a single brain file
-- `codebrain_scan_repo(root, globs)` — bulk-seed brain files across a codebase
-- Hash-gated regeneration so calls are idempotent (skip when source hash matches)
-- Claude-side integration: CLAUDE.md convention + a `PostToolUse` hook snippet so brain files stay in sync after every edit
-- Verifier-friendly format (frontmatter with source hash + mtime, structured sections) so Phase 3 can grep-check that claimed exports actually exist
+- [x] `codebrain_scan_file(path, force)` — generate or refresh one brain file
+- [x] `codebrain_scan_repo(root, force, extensions, exclude_dirs)` — bulk walk + scan
+- [x] `codebrain_init(root, force)` — seed `.brain/context.md` with stack detection
+- [x] Hash-gated regeneration (SHA256) — idempotent reruns
+- [x] Programmatic frontmatter — deterministic `source`, `source_hash`, `model`; Qwen only writes the five sections
+- [x] Defense-in-depth validation: fence-strip, skip-empty-sources (<10 chars), section-presence/order, retry-on-invalid
+- [x] CLAUDE.md convention + PostToolUse hook snippet in this README
 
-### Phase 3 — VERIFIER loop (text-focused)
-Dogfood showed the local model handles code well but drifts on text transforms — no-op polishes, ignored word limits, schema violations. So the verifier targets text:
+### Phase 3 — VERIFIER loop ✓
+Dogfood showed the local model drifts on text transforms. The verifier catches no-ops, length violations, and schema misses deterministically before they reach Claude.
 
-- No-op detection (output stripped equals input stripped → retry with sharper instruction)
-- Deterministic word-count / length gates
-- Regex-schema checks for structured `batch_generate` outputs
-- LLM-as-judge for tone-adherence (optional, costs a second inference call)
-- Auto-retry with tightened instructions (max 2–3 iterations)
+- [x] `detect_noop` — whitespace-normalised equality check (auto-retries inside `codebrain_polish`)
+- [x] `check_word_count(min_words, max_words)` — bounded-window gate
+- [x] `check_regex_schema(pattern)` — structured-output check
+- [x] `codebrain_generate_verified(prompt, min_words, max_words, must_match, max_retries)` — loop with tightened retry instructions, returns `[codebrain warning] ...` if verification fails after retries
 
-### Phase 4 — quality wrappers (optional)
-- **Consensus decoding**: 5× generate, pick best → halves error rate, +3 s overhead
-- **Multi-pass**: skeleton → logic → edge cases → polish as a tool sequence
+### Phase 4 — consensus decoding ✓
+- [x] `codebrain_consensus_generate(prompt, n)` — generate N candidates (clamped to [2,5]), Qwen picks the best verbatim. N+1 inference calls, tightens quality on high-variance tasks.
+- Multi-pass skeleton→logic→edges→polish: deferred (low measured value; individual tools already compose).
 
-### Phase 5 — RAG for style consistency *(only if needed)*
-Brain files from Phase 2.5 already act as an index. Full RAG only gets built if cross-file search becomes the bottleneck.
+### Phase 5 — RAG *(deferred — not a bottleneck)*
+Brain files already act as an index; cross-file RAG only makes sense if future use actually shows that indexing is the blocker. No current signal for it, so not built.
 
 ## License
 

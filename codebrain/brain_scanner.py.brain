@@ -1,0 +1,34 @@
+---
+source: codebrain/brain_scanner.py
+source_hash: sha256:f339d93caf9a6b61b8545d59fc70439a94a8b30d77c7e8a130fc0ed9b21c2dbc
+source_mtime: '2026-04-19T19:30:32Z'
+model: qwen2.5-coder:14b
+generated_at: '2026-04-19T19:35:20Z'
+---
+
+## Purpose
+
+The `brain_file` module provides functionality to generate or refresh `.brain` files for source code files. These `.brain` files contain summaries of the source file's purpose, key exports, collaborators, gotchas, and conventions. The module uses an AI model to analyze the source code and produce these summaries.
+
+## Key exports
+
+- `scan_file(path: str, force: bool = False, model: str | None = None) -> str`
+- `scan_repo(root: str, force: bool = False, extensions: list[str] | None = None, exclude_dirs: list[str] | None = None) -> str`
+
+## Collaborators
+
+- `backend` module (via the `chat` function)
+- `os` module
+- `pathlib` module
+- `yaml` module
+
+## Gotchas
+
+- The AI model's output must be validated to ensure it contains exactly five required sections in order, each non-empty.
+- If the initial output from the AI model is invalid, a retry instruction is sent to the model to generate the correct output.
+
+## Conventions
+
+- The code uses async functions for operations that may involve I/O or network requests (e.g., `scan_file`, `scan_repo`).
+- Error messages are prefixed with `[codebrain error]` to indicate issues.
+- The module provides detailed status lines indicating whether a file was skipped, generated, or failed during processing.

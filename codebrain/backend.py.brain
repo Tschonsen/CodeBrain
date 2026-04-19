@@ -1,0 +1,33 @@
+---
+source: codebrain/backend.py
+source_hash: sha256:412d62d176a4d6a16fd63ecfea737626087a8c79376320e73c625c6aa2d8cf6c
+source_mtime: 2026-04-18T22:34:43Z
+model: qwen2.5-coder:14b
+generated_at: 2026-04-19T18:35:18Z
+---
+
+## Purpose
+
+HTTP client for the local Ollama server. Wraps a single-turn chat call and a model-list call, and surfaces connection / HTTP errors as a single domain exception.
+
+## Key exports
+
+- `chat` — send a single-turn prompt to Ollama, return the assistant message.
+- `list_models` — return the names of models installed in the local Ollama.
+- `BackendError` — raised when the Ollama call fails for any reason.
+
+## Collaborators
+
+_None._
+
+## Gotchas
+
+- Request timeout defaults to 300s via `CODEBRAIN_TIMEOUT`; long Qwen generations on a cold start can approach this ceiling.
+- `chat()` calls `response.raise_for_status()` before reading JSON, so a 500 with a JSON error body raises `BackendError` before the JSON parse step runs.
+- `list_models()` uses a separate 10s timeout hard-coded; env var does not apply here.
+
+## Conventions
+
+- Async throughout — all outward-facing functions are `async def` and use `httpx.AsyncClient` as a context manager per call.
+- Errors are surfaced as a single domain exception (`BackendError`) chained via `raise ... from exc`. No bare `except`.
+- Configuration is read from environment at module load time, with sensible defaults.

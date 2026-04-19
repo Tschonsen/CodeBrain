@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from . import brain_init, brain_scanner, verifier
 from .backend import BackendError, chat, list_models
 
 mcp = FastMCP("codebrain")
@@ -143,9 +144,187 @@ async def codebrain_polish(
     composed_system = _compose_system(system, use_brain)
     prompt = f"Instruction: {instructions}\n\nText to polish:\n{text}"
     try:
-        return await chat(prompt, system=composed_system)
+        output = await chat(prompt, system=composed_system)
     except BackendError as exc:
         return f"[codebrain error] {exc}"
+
+    ok, reason = verifier.detect_noop(text, output)
+    if not ok:
+        retry_prompt = (
+            prompt + "\n\n" + verifier.tightened_retry_instruction(reason)
+        )
+        try:
+            output = await chat(retry_prompt, system=composed_system)
+        except BackendError as exc:
+            return f"[codebrain error] {exc}"
+    return output
+
+
+@mcp.tool()
+async def codebrain_scan_file(path: str, force: bool = False) -> str:
+    """Generate or refresh the `<path>.brain` summary file for a source file.
+
+    Reads the source at `path`, computes its SHA256, and compares to the
+    existing `.brain` file's `source_hash` frontmatter. If they match and
+    `force` is false, generation is skipped. Otherwise Qwen produces a new
+    brain file (Purpose / Key exports / Collaborators / Gotchas /
+    Conventions), the output is validated against the format spec, and on
+    validation failure one retry with a sharper instruction is attempted
+    before giving up. No partial or broken brain files are ever written.
+
+    Format spec: `.spec/brain-file-format.md`.
+
+    Args:
+        path: Path to the source file to summarise.
+        force: If true, regenerate even when the hash matches.
+    """
+    return await brain_scanner.scan_file(path, force=force)
+
+
+@mcp.tool()
+async def codebrain_consensus_generate(
+    prompt: str,
+    system: str = "",
+    n: int = 3,
+    use_brain: bool = True,
+) -> str:
+    """Generate N candidates, let Qwen pick the best, return the winner.
+
+    Runs `prompt` N times (serial — Ollama serialises on single GPU anyway),
+    then does one additional call where Qwen is shown all candidates and
+    asked to return the best one verbatim. Useful for high-variance tasks
+    where a single shot drifts but majority-vote style sampling tightens
+    quality at the cost of N+1 inference calls.
+
+    Args:
+        prompt: The task description or content request.
+        system: Optional system message to steer tone / format / constraints.
+        n: Number of candidates to generate (default 3, clamped to [2, 5]).
+        use_brain: If true, prepend `.brain/context.md` to the system prompt.
+    """
+    n = max(2, min(5, n))
+    composed_system = _compose_system(system, use_brain)
+
+    candidates: list[str] = []
+    for i in range(n):
+        try:
+            candidates.append(await chat(prompt, system=composed_system))
+        except BackendError as exc:
+            return f"[codebrain error] candidate {i} failed: {exc}"
+
+    judge_system = (
+        "You pick the single best candidate output for a user's task. "
+        "Criteria in priority order: correctness, matches the instruction, "
+        "clarity, concision. Output ONLY the chosen candidate's text — no "
+        "preamble, no explanation, no 'Candidate N:' prefix, no quotes."
+    )
+    body = "\n\n".join(
+        f"--- Candidate {i + 1} ---\n{c}" for i, c in enumerate(candidates)
+    )
+    judge_prompt = (
+        f"Original task:\n{prompt}\n\n"
+        f"Candidates:\n\n{body}\n\n"
+        "Return the single best candidate verbatim."
+    )
+    try:
+        return await chat(judge_prompt, system=judge_system)
+    except BackendError as exc:
+        return f"[codebrain error] judge call failed: {exc}"
+
+
+@mcp.tool()
+async def codebrain_generate_verified(
+    prompt: str,
+    system: str = "",
+    min_words: int | None = None,
+    max_words: int | None = None,
+    must_match: str | None = None,
+    max_retries: int = 2,
+    use_brain: bool = True,
+) -> str:
+    """Generate with verifier loop — enforces word limits and regex schemas.
+
+    Runs `codebrain_generate`, then checks the output against the requested
+    constraints. On failure, retries with a tightened instruction that
+    names the specific problem. Gives up after `max_retries` attempts and
+    returns the last output with a `[codebrain warning] ...` prefix.
+
+    Args:
+        prompt: The task description or content request.
+        system: Optional system message to steer tone / format / constraints.
+        min_words: Minimum output word count (None = unbounded).
+        max_words: Maximum output word count (None = unbounded).
+        must_match: Regex pattern the output must match (`re.search` semantics).
+        max_retries: Max retry attempts on verification failure (default 2).
+        use_brain: If true, prepend `.brain/context.md` to the system prompt.
+    """
+    composed_system = _compose_system(system, use_brain)
+    current_prompt = prompt
+    output = ""
+    reason = ""
+    for attempt in range(max_retries + 1):
+        try:
+            output = await chat(current_prompt, system=composed_system)
+        except BackendError as exc:
+            return f"[codebrain error] {exc}"
+        ok, reason = verifier.run_checks(
+            output,
+            min_words=min_words,
+            max_words=max_words,
+            must_match=must_match,
+        )
+        if ok:
+            return output
+        current_prompt = (
+            prompt + "\n\n" + verifier.tightened_retry_instruction(reason)
+        )
+    return f"[codebrain warning] verification failed after {max_retries} retries ({reason}):\n\n{output}"
+
+
+@mcp.tool()
+async def codebrain_init(root: str, force: bool = False) -> str:
+    """Seed `.brain/context.md` for a repo — one-time setup before scanning.
+
+    Detects the stack (python / js / ts / rust / go / java) from marker
+    files, counts source-file extensions, asks Qwen for a short overview,
+    and writes `.brain/context.md` with a pre-populated template. The user
+    is expected to edit the `## Notes for Claude` section afterwards.
+    Idempotent: existing `context.md` is not overwritten unless `force=True`.
+
+    Args:
+        root: Directory to initialise.
+        force: If true, overwrite an existing `.brain/context.md`.
+    """
+    return await brain_init.init_repo(root, force=force)
+
+
+@mcp.tool()
+async def codebrain_scan_repo(
+    root: str,
+    force: bool = False,
+    extensions: list[str] | None = None,
+    exclude_dirs: list[str] | None = None,
+) -> str:
+    """Scan every source file under `root` and generate/refresh its `.brain` file.
+
+    Walks the directory tree, filters by file extension, prunes excluded
+    directories, and runs `codebrain_scan_file` on each match. Hash-gated:
+    unchanged files skip the model call. Per-file failures do not abort the
+    batch — they are reported at the end.
+
+    Defaults:
+      - extensions: .py .js .ts .tsx .jsx .java .go .rs
+      - exclude_dirs: .git .venv venv node_modules __pycache__ dist build target
+
+    Args:
+        root: Directory to scan recursively.
+        force: If true, regenerate every brain file even when source hash matches.
+        extensions: Override default source extensions (e.g. [".py", ".rb"]).
+        exclude_dirs: Override default directory-name exclusion list.
+    """
+    return await brain_scanner.scan_repo(
+        root, force=force, extensions=extensions, exclude_dirs=exclude_dirs
+    )
 
 
 @mcp.tool()
