@@ -37,6 +37,7 @@ Rules:
 - `source_hash` is content-only SHA256, hex-encoded, prefixed with `sha256:`. **This is the sole input to the skip-gate.**
 - `source_mtime` and `generated_at` are ISO-8601 UTC. Informational, for humans debugging "when was this touched".
 - `model` records which model generated the file, so a model bump (e.g. to `qwen3-coder`) can trigger regeneration even when source hash is unchanged (future feature — v1 does not act on this field).
+- **Foreign-model respect:** if the existing brain's `model` field does not start with `qwen` (e.g. `claude-inline`, indicating it was written by Claude directly per SDCD §1.6), CodeBrain's scanner MUST NOT overwrite it under `force=False`. Rationale: a Claude-written brain is usually richer than a Qwen-written one; stepping on it silently is a regression. Under `force=True`, the user has explicitly opted in.
 
 ## Section schema
 
