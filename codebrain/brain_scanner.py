@@ -274,6 +274,10 @@ async def scan_file(
         existing = parse_existing_brain(brain_path)
         if existing is not None and existing.get("source_hash") == source_hash:
             return f"skipped (unchanged): {brain_path}"
+        if existing is not None:
+            existing_model = str(existing.get("model") or "")
+            if existing_model and not existing_model.lower().startswith("qwen"):
+                return f"skipped (foreign-model brain preserved, model={existing_model!r}): {brain_path}"
 
     try:
         source_content = source_bytes.decode("utf-8")

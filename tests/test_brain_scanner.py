@@ -484,6 +484,46 @@ async def test_scan_file_regenerates_when_hash_differs(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_scan_file_preserves_foreign_model_brain_under_force_false(tmp_path: Path):
+    src = tmp_path / "hello.py"
+    src.write_text("def greet(): pass\n", encoding="utf-8")
+
+    brain = src.with_name(src.name + ".brain")
+    brain.write_text(
+        GOOD_BRAIN.replace("model: qwen2.5-coder:14b", "model: claude-inline"),
+        encoding="utf-8",
+    )
+
+    async def fake_chat(prompt, system="", **kwargs):
+        pytest.fail("chat must not be called when a foreign-model brain exists")
+
+    with patch.object(bs, "chat", side_effect=fake_chat):
+        result = await bs.scan_file(str(src))
+
+    assert result.startswith("skipped (foreign-model brain preserved"), result
+
+
+@pytest.mark.asyncio
+async def test_scan_file_overwrites_foreign_model_brain_under_force_true(tmp_path: Path):
+    src = tmp_path / "hello.py"
+    src.write_text("def greet(): pass\n", encoding="utf-8")
+
+    brain = src.with_name(src.name + ".brain")
+    brain.write_text(
+        GOOD_BRAIN.replace("model: qwen2.5-coder:14b", "model: claude-inline"),
+        encoding="utf-8",
+    )
+
+    async def fake_chat(prompt, system="", **kwargs):
+        return FAKE_SECTIONS
+
+    with patch.object(bs, "chat", side_effect=fake_chat):
+        result = await bs.scan_file(str(src), force=True)
+
+    assert result.startswith("generated:"), result
+
+
+@pytest.mark.asyncio
 async def test_scan_file_force_regenerates_even_on_hash_match(tmp_path: Path):
     src = tmp_path / "hello.py"
     src_bytes = b"def greet(): pass\n"

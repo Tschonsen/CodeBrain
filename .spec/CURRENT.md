@@ -35,11 +35,11 @@ _Last updated: 2026-04-19 (evening session)_
 
 ## Test coverage
 
-- `tests/test_brain_scanner.py` — 56 tests (hash helper, frontmatter parser, validator, fence stripper, display-path resolver, repo-root discovery, prompt builders, scan_file integration, iter_source_files, scan_repo)
+- `tests/test_brain_scanner.py` — 58 tests (hash helper, frontmatter parser, validator, fence stripper, display-path resolver, repo-root discovery, prompt builders, scan_file integration incl. foreign-model-respect, iter_source_files, scan_repo)
 - `tests/test_brain_init.py` — 17 tests (extension counting, marker detection, stack inference, context.md builder, init_repo orchestrator + fallback)
 - `tests/test_verifier.py` — 14 tests (noop / word-count / regex-schema / run_checks / tightened-retry)
 - `tests/test_server_verified.py` — 9 tests (polish-noop-retry, generate_verified loop, consensus judge call)
-- **96 tests total, all passing.**
+- **98 tests total, all passing.**
 
 ## As next (optional, when use reveals a need)
 
@@ -47,7 +47,6 @@ _Last updated: 2026-04-19 (evening session)_
 - **Model bump to qwen3-coder** — one `ollama pull` + env var swap, test whether rule-compliance improves.
 - **Multi-pass generation** (Phase 4 skipped sub-feature) — skeleton→logic→edges→polish as a tool sequence. Compose manually for now.
 - **Progress-streaming in scan_repo** — kills the MCP-timeout problem on large repos.
-- **Foreign-model-brain respect in `scan_file`** — spec updated 2026-04-19: under `force=False`, skip regeneration when existing brain's `model` field does not start with `qwen` (Claude-inline-brains written per SDCD §1.6 should not be silently overwritten by Qwen output). Code change is ~5 lines in `brain_scanner.scan_file` after `parse_existing_brain`. One new test: a `.brain` with `model: claude-inline` survives a regular scan but is replaced on `force=True`.
 
 ## Constraints
 
