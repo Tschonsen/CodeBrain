@@ -2,7 +2,7 @@
 
 **An MCP server that lets Claude Code offload bulk work to a local LLM running on your own hardware.**
 
-![Status](https://img.shields.io/badge/status-Phase_1_scaffold-yellow)
+![Status](https://img.shields.io/badge/status-Phase_2_complete-brightgreen)
 ![Stack](https://img.shields.io/badge/stack-Python_%2B_MCP_%2B_Ollama-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -18,7 +18,7 @@
 
 ## Status
 
-**Phase 1 scaffold.** Skeleton works, three tools exposed, Ollama backend wired. Not yet battle-tested across real workflows. This README will evolve as integration matures.
+**Phase 2 complete.** Five tools exposed, `.brain/context.md` passthrough live, MCP integration verified in a real Claude Code session. Dogfood-tested on coding tasks (LRU cache, refactors, closure explanations) and structured text generation. Phase 2.5 (per-file brain system) is next — see the roadmap below.
 
 ## How it works
 
@@ -35,15 +35,19 @@ Claude reviews,            ◄────────   tool result string     
 applies, or pushes back
 ```
 
-Three tools are exposed today:
+Five tools are exposed today:
 
 | Tool | When Claude would reach for it |
 |---|---|
-| `codebrain_generate(prompt, system)` | Bulk content, boilerplate, repetitive transformations, first drafts |
+| `codebrain_generate(prompt, system, use_brain)` | Bulk content, boilerplate, repetitive transformations, first drafts |
+| `codebrain_batch_generate(prompts, system, use_brain)` | N prompts with one shared system message, serial execution, index-stable errors so one failure doesn't abort the batch |
+| `codebrain_polish(text, instructions, use_brain)` | Targeted transform over existing text — shorten, rephrase, translate, tighten — preserves meaning and structure instead of regenerating |
 | `codebrain_explain(code, question)` | Quick read-only explanations without burning Claude context |
 | `codebrain_status()` | Check which models are installed locally |
 
-The list is deliberately short for Phase 1. Batch-polish, context-aware `.brain` helpers, and a VERIFIER test-loop are planned for later phases.
+The `use_brain` flag on generation tools automatically prepends `.brain/context.md` from the current working directory to the system prompt, so project-specific context travels with every call without Claude having to pass it manually.
+
+Per-file brain summaries (`foo.py.brain` siblings with signatures, dependencies, and purpose) and a text-output VERIFIER loop are next on the roadmap.
 
 ## Requirements
 
@@ -82,7 +86,7 @@ Add CodeBrain to your Claude Code MCP config. On Windows, that's usually `~/.cla
 }
 ```
 
-Restart any Claude Code session — the tools `codebrain_generate`, `codebrain_explain`, and `codebrain_status` should now appear in the available-tools list.
+Restart any Claude Code session — the five `codebrain_*` tools should now appear in the available-tools list.
 
 ## Sanity check
 
@@ -118,26 +122,43 @@ CodeBrain/
 
 ## Roadmap
 
-### Phase 1 — scaffold *(current)*
+### Phase 1 — scaffold ✓
 - [x] Ollama HTTP client with error handling
 - [x] FastMCP server with stdio transport
-- [x] Three core tools: generate, explain, status
+- [x] Three core tools: `generate`, `explain`, `status`
 - [x] Documented setup + Claude Code config
-- [ ] Test in a real session — does Claude actually reach for these tools when appropriate?
+- [x] Verified in a real Claude Code session
 
-### Phase 2 — batch & context
-- `codebrain_batch_generate` for mass content with a shared system prompt
-- `codebrain_polish` for applying a style across many files
-- `.brain`-style project summaries passed as context automatically
+### Phase 2 — batch & context ✓
+- [x] `codebrain_batch_generate` for mass content with one shared system prompt, index-stable errors
+- [x] `codebrain_polish` for targeted transforms (shorten / rephrase / translate) instead of regeneration
+- [x] `.brain/context.md` passthrough — cwd project context auto-prepended to every generation call
+- [x] Dogfood: coding tasks solid, text-transform tasks revealed real limits (informs Phase 3)
 
-### Phase 3 — VERIFIER loop
-- Wire output through test-runner / linter / type-checker
-- Auto-retry with error feedback (max 3 iterations)
-- Per-error-type repair strategies
+### Phase 2.5 — brain system *(next)*
+The real context-budget saver. For each code file `foo.py`, a companion `foo.py.brain` that captures signatures, dependencies, purpose, and gotchas. Claude reads the brain file first and only opens the source when it actually needs to.
 
-### Phase 4 — MEMORY
-- RAG over the user's own code for style consistency
-- Correction learning
+- `codebrain_scan_file(path)` — generate or refresh a single brain file
+- `codebrain_scan_repo(root, globs)` — bulk-seed brain files across a codebase
+- Hash-gated regeneration so calls are idempotent (skip when source hash matches)
+- Claude-side integration: CLAUDE.md convention + a `PostToolUse` hook snippet so brain files stay in sync after every edit
+- Verifier-friendly format (frontmatter with source hash + mtime, structured sections) so Phase 3 can grep-check that claimed exports actually exist
+
+### Phase 3 — VERIFIER loop (text-focused)
+Dogfood showed the local model handles code well but drifts on text transforms — no-op polishes, ignored word limits, schema violations. So the verifier targets text:
+
+- No-op detection (output stripped equals input stripped → retry with sharper instruction)
+- Deterministic word-count / length gates
+- Regex-schema checks for structured `batch_generate` outputs
+- LLM-as-judge for tone-adherence (optional, costs a second inference call)
+- Auto-retry with tightened instructions (max 2–3 iterations)
+
+### Phase 4 — quality wrappers (optional)
+- **Consensus decoding**: 5× generate, pick best → halves error rate, +3 s overhead
+- **Multi-pass**: skeleton → logic → edge cases → polish as a tool sequence
+
+### Phase 5 — RAG for style consistency *(only if needed)*
+Brain files from Phase 2.5 already act as an index. Full RAG only gets built if cross-file search becomes the bottleneck.
 
 ## License
 
